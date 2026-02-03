@@ -3,9 +3,12 @@ import random
 import sys
 import os
 import glob
+import math
 
 # --- Initialisation ---
+pygame.mixer.pre_init(44100, -16, 2, 2048)
 pygame.init()
+pygame.mixer.init()
 
 # --- Constantes (Format 16:9) ---
 LARGEUR_JEU = 1280
@@ -15,676 +18,669 @@ FPS = 60
 # Couleurs
 NOIR = (0, 0, 0)
 BLANC = (255, 255, 255)
+VERT = (0, 255, 0) # Ajout du Vert pour la barre de vie
 VERT_MILITAIRE = (46, 139, 87)
 GRIS_FONCE = (50, 50, 50)
 GRIS_TORNADE_PETITE = (180, 180, 180)
-GRIS_TORNADE_GROSSE = (80, 80, 80)
+GRIS_TORNADE_MOYENNE = (120, 100, 100)
+GRIS_TORNADE_GROSSE = (80, 50, 50)
 JAUNE = (255, 255, 0)
 ROUGE = (255, 0, 0)
+ROUGE_SANG = (180, 0, 0)
 ORANGE = (255, 165, 0)
 OR = (255, 215, 0)
 BLEU_NUIT = (20, 20, 60)
+BLEU_BOUCLIER = (0, 191, 255)
 
 # Configuration écran
 ecran = pygame.display.set_mode((LARGEUR_JEU, HAUTEUR_JEU))
-pygame.display.set_caption("Independance Day : Edition Deluxe")
+pygame.display.set_caption("Independance Day : Ultimate Edition")
 
 clock = pygame.time.Clock()
 font = pygame.font.Font(None, 36)
 petite_font = pygame.font.Font(None, 24)
 grosse_font = pygame.font.Font(None, 80)
 
+# --- SYSTEME DE PARTICULES (VFX) ---
+class Particule:
+    def __init__(self, x, y, couleur, vitesse, taille, vie):
+        self.x = x
+        self.y = y
+        self.couleur = couleur
+        self.vx = random.uniform(-vitesse, vitesse)
+        self.vy = random.uniform(-vitesse, vitesse)
+        self.taille = taille
+        self.vie = vie
+        self.vie_max = vie
+
+    def update(self):
+        self.x += self.vx
+        self.y += self.vy
+        self.vie -= 1
+        self.taille *= 0.9
+
+    def draw(self, surface):
+        if self.vie > 0:
+            alpha = int((self.vie / self.vie_max) * 255)
+            s = pygame.Surface((int(self.taille*2), int(self.taille*2)), pygame.SRCALPHA)
+            pygame.draw.circle(s, (*self.couleur, alpha), (int(self.taille), int(self.taille)), int(self.taille))
+            surface.blit(s, (self.x, self.y))
+
+class GestionnaireVFX:
+    def __init__(self):
+        self.particules = []
+        self.ecran_rouge = pygame.Surface((LARGEUR_JEU, HAUTEUR_JEU))
+        self.ecran_rouge.fill(ROUGE)
+        self.flash_nuke = 0
+
+    def ajouter(self, x, y, couleur, count=5):
+        for _ in range(count):
+            self.particules.append(Particule(x, y, couleur, 3, random.randint(3, 6), 30))
+    
+    def declencher_nuke(self):
+        self.flash_nuke = 255
+
+    def update(self):
+        for p in self.particules[:]:
+            p.update()
+            if p.vie <= 0: self.particules.remove(p)
+        if self.flash_nuke > 0: self.flash_nuke -= 5
+
+    def draw(self, surface):
+        for p in self.particules: p.draw(surface)
+        if self.flash_nuke > 0:
+            s = pygame.Surface((LARGEUR_JEU, HAUTEUR_JEU))
+            s.fill(BLANC)
+            s.set_alpha(self.flash_nuke)
+            surface.blit(s, (0,0))
+
+    def draw_low_hp(self, surface):
+        alpha = int(50 + math.sin(pygame.time.get_ticks() * 0.01) * 30)
+        self.ecran_rouge.set_alpha(alpha)
+        surface.blit(self.ecran_rouge, (0,0), special_flags=pygame.BLEND_ADD)
+
+
 # --- GESTIONNAIRE DE MUSIQUE ---
 class GestionnaireMusique:
-    """Gère la musique de fond par niveau et les effets sonores"""
-    
     def __init__(self):
-        pygame.mixer.init()
-        
-        # Paramètres audio
         self.volume_musique = 0.5
         self.volume_effets = 0.7
         self.musique_active = True
         self.effets_actifs = True
-        
-        # Listes de fichiers
         self.musiques_niveaux = {}
         self.effets_sonores = {}
-        
-        # État
         self.musique_en_cours = None
-        self.type_musique_actuelle = None
-        
-        # Charger les fichiers audio
-        self.charger_musiques()
-        self.charger_effets()
+        self.charger_tout()
     
-    def charger_musiques(self):
-        """Charge les musiques depuis le dossier 'musiques/'"""
-        dossier_script = os.path.dirname(os.path.abspath(__file__))
-        dossier_musiques = os.path.join(dossier_script, "musiques")
+    def charger_tout(self):
+        base = os.path.dirname(os.path.abspath(__file__))
+        path_m = os.path.join(base, "musiques")
+        if os.path.exists(path_m):
+            files = sorted([f for f in os.listdir(path_m) if f.endswith(('.mp3','.ogg','.wav'))])
+            for i, f in enumerate(files[:3]):
+                self.musiques_niveaux[i+1] = os.path.join(path_m, f)
         
-        os.makedirs(dossier_musiques, exist_ok=True)
-        
-        # Charger musiques par niveau
-        self.musiques_niveaux = {}
-        noms_niveaux = {
-            1: ["Terre.mp3", "Terre.ogg", "Terre.wav", "terre.mp3", "terre.ogg"],
-            2: ["Ciel.mp3", "Ciel.ogg", "Ciel.wav", "ciel.mp3", "ciel.ogg"],
-            3: ["Espace.mp3", "Espace.ogg", "Espace.wav", "espace.mp3", "espace.ogg"]
+        path_s = os.path.join(base, "sons")
+        map_effets = {
+            "tir": ["tir", "shoot"], "explosion": ["boom", "explosion"],
+            "degats": ["hit", "degats"], "piece": ["coin", "piece"],
+            "gameover": ["death", "gameover"], "soin": ["heal", "heart"],
+            "nuke": ["nuke"], "levelup": ["levelup"]
         }
-        
-        for niveau, noms_possibles in noms_niveaux.items():
-            for nom in noms_possibles:
-                chemin = os.path.join(dossier_musiques, nom)
-                if os.path.exists(chemin):
-                    self.musiques_niveaux[niveau] = chemin
-                    print(f"🎵 Niveau {niveau}: {nom}")
-                    break
-        
-        print(f"🎵 Musiques chargées: {len(self.musiques_niveaux)}/3")
-    
-    def charger_effets(self):
-        """Charge les effets sonores depuis le dossier 'sons/'"""
-        dossier_script = os.path.dirname(os.path.abspath(__file__))
-        dossier_sons = os.path.join(dossier_script, "sons")
-        
-        os.makedirs(dossier_sons, exist_ok=True)
-        
-        # Noms des effets à charger
-        noms_effets = {
-            "tir": ["tir.wav", "tir.ogg", "shoot.wav", "shoot.ogg"],
-            "explosion": ["explosion.wav", "explosion.ogg", "boom.wav"],
-            "degats": ["degats.wav", "degats.ogg", "hit.wav", "hurt.wav"],
-            "piece": ["piece.wav", "piece.ogg", "coin.wav", "money.wav"],
-            "gameover": ["gameover.wav", "gameover.ogg", "death.wav"]
-        }
-        
-        for nom_effet, fichiers_possibles in noms_effets.items():
-            for fichier in fichiers_possibles:
-                chemin = os.path.join(dossier_sons, fichier)
-                if os.path.exists(chemin):
-                    try:
-                        self.effets_sonores[nom_effet] = pygame.mixer.Sound(chemin)
-                        self.effets_sonores[nom_effet].set_volume(self.volume_effets)
-                        print(f"🔊 Effet chargé: {nom_effet}")
-                        break
-                    except Exception as e:
-                        print(f"❌ Erreur chargement {fichier}: {e}")
-    
-    def jouer_musique_niveau(self, numero_niveau):
-        """Lance la musique spécifique d'un niveau EN BOUCLE"""
-        if not self.musique_active:
-            return
-        
-        if numero_niveau in self.musiques_niveaux:
-            musique = self.musiques_niveaux[numero_niveau]
-            
-            if self.musique_en_cours != musique:
-                try:
-                    pygame.mixer.music.load(musique)
-                    pygame.mixer.music.set_volume(self.volume_musique)
-                    pygame.mixer.music.play(-1)  # -1 = boucle infinie
-                    self.musique_en_cours = musique
-                    self.type_musique_actuelle = f"niveau_{numero_niveau}"
-                    print(f"🎵 Niveau {numero_niveau}: {os.path.basename(musique)} (EN BOUCLE)")
-                except Exception as e:
-                    print(f"❌ Erreur lecture musique niveau {numero_niveau}: {e}")
-        else:
-            print(f"⚠️ Pas de musique pour le niveau {numero_niveau}")
-    
-    def arreter_musique(self):
-        """Arrête la musique"""
-        pygame.mixer.music.stop()
-        self.musique_en_cours = None
-        self.type_musique_actuelle = None
-    
-    def basculer_musique(self):
-        """Active/désactive la musique"""
-        self.musique_active = not self.musique_active
-        
-        if self.musique_active:
-            print("🎵 Musique: ON")
-        else:
-            self.arreter_musique()
-            print("🔇 Musique: OFF")
-        
-        return self.musique_active
-    
-    def basculer_effets(self):
-        """Active/désactive les effets sonores"""
-        self.effets_actifs = not self.effets_actifs
-        print(f"🔊 Effets: {'ON' if self.effets_actifs else 'OFF'}")
-        return self.effets_actifs
-    
-    def modifier_volume_musique(self, delta):
-        """Modifie le volume de la musique"""
-        self.volume_musique = max(0.0, min(1.0, self.volume_musique + delta))
-        pygame.mixer.music.set_volume(self.volume_musique)
-        print(f"🔊 Volume musique: {int(self.volume_musique * 100)}%")
-    
-    def modifier_volume_effets(self, delta):
-        """Modifie le volume des effets"""
-        self.volume_effets = max(0.0, min(1.0, self.volume_effets + delta))
-        for effet in self.effets_sonores.values():
-            effet.set_volume(self.volume_effets)
-        print(f"🔊 Volume effets: {int(self.volume_effets * 100)}%")
-    
-    def jouer_effet(self, nom_effet):
-        """Joue un effet sonore"""
-        if not self.effets_actifs:
-            return
-        
-        if nom_effet in self.effets_sonores:
-            try:
-                self.effets_sonores[nom_effet].play()
-            except Exception as e:
-                print(f"❌ Erreur lecture effet {nom_effet}: {e}")
+        if os.path.exists(path_s):
+            for f in os.listdir(path_s):
+                for k, v in map_effets.items():
+                    if any(x in f.lower() for x in v):
+                        try:
+                            self.effets_sonores[k] = pygame.mixer.Sound(os.path.join(path_s, f))
+                            self.effets_sonores[k].set_volume(self.volume_effets)
+                        except: pass
 
-# --- CLASSE BOUTON ---
+    def jouer_musique(self, niv):
+        if not self.musique_active: return
+        fichier = self.musiques_niveaux.get(niv, self.musiques_niveaux.get(1))
+        if fichier and self.musique_en_cours != fichier:
+            try:
+                pygame.mixer.music.load(fichier)
+                pygame.mixer.music.set_volume(self.volume_musique)
+                pygame.mixer.music.play(-1)
+                self.musique_en_cours = fichier
+            except: pass
+
+    def effet(self, nom):
+        if self.effets_actifs and nom in self.effets_sonores:
+            self.effets_sonores[nom].play()
+
+    def arreter(self): pygame.mixer.music.stop()
+    def toggle_m(self): 
+        self.musique_active = not self.musique_active
+        if not self.musique_active: self.arreter()
+        return self.musique_active
+    def toggle_e(self): 
+        self.effets_actifs = not self.effets_actifs
+        return self.effets_actifs
+
+# --- CLASSES DU JEU ---
+
 class Bouton:
     def __init__(self, cx, cy, w, h, texte, action=None):
         self.rect = pygame.Rect(0, 0, w, h)
         self.rect.center = (cx, cy)
         self.texte = texte
         self.action = action
-        self.couleur_base = GRIS_FONCE
-        self.couleur_survol = ORANGE
         self.est_survole = False
 
     def dessiner(self, surface):
-        couleur = self.couleur_survol if self.est_survole else self.couleur_base
-        pygame.draw.rect(surface, couleur, self.rect, border_radius=10)
+        col = ORANGE if self.est_survole else GRIS_FONCE
+        pygame.draw.rect(surface, col, self.rect, border_radius=10)
         pygame.draw.rect(surface, BLANC, self.rect, 2, border_radius=10)
-        
-        txt_surf = font.render(self.texte, True, BLANC)
-        txt_rect = txt_surf.get_rect(center=self.rect.center)
-        surface.blit(txt_surf, txt_rect)
+        txt = font.render(self.texte, True, BLANC)
+        surface.blit(txt, txt.get_rect(center=self.rect.center))
 
-    def verifier_survol(self, pos_souris):
-        self.est_survole = self.rect.collidepoint(pos_souris)
-
-    def verifier_clic(self, pos_souris):
-        if self.rect.collidepoint(pos_souris) and self.action:
-            return self.action()
-        return None
-
-# --- CLASSES DU JEU ---
+    def verifier(self, pos, click):
+        self.est_survole = self.rect.collidepoint(pos)
+        if self.est_survole and click and self.action: return self.action()
 
 class Soldat(pygame.sprite.Sprite):
     def __init__(self):
         super().__init__()
         try:
-            img_path = os.path.join(os.path.dirname(__file__), "soldier.png")
-            loaded = pygame.image.load(img_path).convert_alpha()
-            self.image = pygame.transform.smoothscale(loaded, (40, 50))
-        except Exception:
-            self.image = pygame.Surface([40, 50], pygame.SRCALPHA)
+            self.image = pygame.image.load(os.path.join(os.path.dirname(__file__), "soldier.png")).convert_alpha()
+            self.image = pygame.transform.smoothscale(self.image, (50, 60))
+        except:
+            self.image = pygame.Surface([50, 60])
             self.image.fill(VERT_MILITAIRE)
-            pygame.draw.rect(self.image, (30, 90, 55), [10, 0, 20, 10])
+            pygame.draw.rect(self.image, (30, 90, 55), [20, 0, 10, 20])
+        
         self.rect = self.image.get_rect()
         self.rect.centerx = LARGEUR_JEU // 2
         self.rect.bottom = HAUTEUR_JEU - 20
         
-        # Stats
+        # Stats et Améliorations
+        self.niveau_tir = 1 # 1, 2, 3
+        self.niveau_cadence = 1 
         self.cadence_base = 350
-        self.niveau_cadence = 1
+        
+        self.invincible = False
+        self.fin_invincibilite = 0
+        self.nukes = 0
         self.dernier_tir = 0
 
     def update(self):
-        pos_souris_x, _ = pygame.mouse.get_pos()
-        self.rect.centerx = pos_souris_x
-        if self.rect.left < 0: self.rect.left = 0
-        if self.rect.right > LARGEUR_JEU: self.rect.right = LARGEUR_JEU
+        self.rect.centerx = pygame.mouse.get_pos()[0]
+        self.rect.clamp_ip(ecran.get_rect())
+        if self.invincible and pygame.time.get_ticks() > self.fin_invincibilite:
+            self.invincible = False
 
-    def verifier_tir_auto(self):
-        maintenant = pygame.time.get_ticks()
-        delai = max(50, self.cadence_base - (self.niveau_cadence * 30))
+    def tirer(self):
+        now = pygame.time.get_ticks()
+        delai = max(50, self.cadence_base - (self.niveau_cadence * 40))
         
-        if maintenant - self.dernier_tir > delai:
-            self.dernier_tir = maintenant
-            return Balle(self.rect.centerx, self.rect.top)
-        return None
+        if now - self.dernier_tir > delai:
+            self.dernier_tir = now
+            balles = []
+            x, y = self.rect.centerx, self.rect.top
+            
+            if self.niveau_tir == 1:
+                balles.append(Balle(x, y))
+            elif self.niveau_tir == 2:
+                balles.append(Balle(x-10, y, -5))
+                balles.append(Balle(x+10, y, 5))
+            elif self.niveau_tir >= 3:
+                for angle in [-15, -5, 5, 15]:
+                    balles.append(Balle(x, y, angle))
+            return balles
+        return []
 
 class Tornade(pygame.sprite.Sprite):
-    def __init__(self):
+    def __init__(self, niveau_jeu):
         super().__init__()
-        is_big = random.random() < 0.2 
+        self.niveau_jeu = niveau_jeu
         
-        if is_big:
-            largeur = random.randint(90, 140)
-            self.couleur = GRIS_TORNADE_GROSSE
-            self.valeur = 20
-            self.vitesse_y = random.randint(8, 10) 
-        else:
-            largeur = random.randint(40, 70)
-            self.couleur = GRIS_TORNADE_PETITE
-            self.valeur = 5
-            self.vitesse_y = random.randint(3, 6)
+        # --- TAILLE ET VITESSE ---
+        if niveau_jeu == 1: scale = random.randint(40, 60)
+        elif niveau_jeu == 2: scale = random.randint(50, 80)
+        else: scale = random.randint(60, 100)
 
-        hauteur = int(largeur * 1.5)
-        try:
-            img_path = os.path.join(os.path.dirname(__file__), "tornado.png")
-            loaded = pygame.image.load(img_path).convert_alpha()
-            self.image = pygame.transform.smoothscale(loaded, (largeur, hauteur))
-        except Exception:
-            self.image = pygame.Surface([largeur, hauteur], pygame.SRCALPHA)
-            points = [(0, 0), (largeur, 0), (largeur // 2, hauteur)]
-            pygame.draw.polygon(self.image, self.couleur, points)
+        # Vitesse verticale (chute)
+        self.vy = int(scale / 10) + random.randint(1, 3) 
         
-        self.rect = self.image.get_rect()
-        self.rect.x = random.randint(0, LARGEUR_JEU - largeur)
-        self.rect.y = -hauteur
+        # --- POSITION DE DEPART (TOUJOURS EN HAUT) ---
+        self.rect = pygame.Rect(0, 0, scale, int(scale*1.5))
+        self.rect.x = random.randint(0, LARGEUR_JEU - scale)
+        self.rect.y = -self.rect.height # Au dessus de l'écran
+        
+        # --- COMPORTEMENT SELON NIVEAU ---
+        self.vx = 0 # Vitesse horizontale par défaut
+        
+        if niveau_jeu == 1:
+            self.pv = 1
+            self.vx = 0 # Tombe tout droit
+            self.couleur = GRIS_TORNADE_PETITE
+        elif niveau_jeu == 2:
+            self.pv = 2
+            self.vx = random.choice([-2, 2]) # Zigzag léger
+            self.couleur = GRIS_TORNADE_MOYENNE
+        else:
+            self.pv = 3
+            self.vx = random.choice([-3, 3]) # Zigzag rapide
+            self.couleur = GRIS_TORNADE_GROSSE
+        
+        # Stockage PV Max pour la barre de vie
+        self.max_pv = self.pv
+
+        try:
+            img = pygame.image.load(os.path.join(os.path.dirname(__file__), "tornado.png")).convert_alpha()
+            self.image = pygame.transform.smoothscale(img, (scale, int(scale*1.5)))
+        except:
+            self.image = pygame.Surface([scale, int(scale*1.5)], pygame.SRCALPHA)
+            pts = [(0, 0), (scale, 0), (scale//2, int(scale*1.5))]
+            pygame.draw.polygon(self.image, self.couleur, pts)
+        
+        # On applique la taille au rect final
+        self.rect.size = self.image.get_size()
 
     def update(self):
-        self.rect.y += self.vitesse_y
+        # Mouvement
+        self.rect.y += self.vy
+        self.rect.x += self.vx
+
+        # --- REBOND SUR LES CÔTÉS UNIQUEMENT ---
+        # Si on n'est pas au niveau 1 (où vx est 0), on gère le rebond latéral
+        if self.niveau_jeu > 1:
+            if self.rect.left <= 0:
+                self.rect.left = 0
+                self.vx *= -1 # Inverse la direction X
+            elif self.rect.right >= LARGEUR_JEU:
+                self.rect.right = LARGEUR_JEU
+                self.vx *= -1
 
 class Balle(pygame.sprite.Sprite):
-    def __init__(self, x, y):
+    def __init__(self, x, y, angle=0):
         super().__init__()
         try:
-            img_path = os.path.join(os.path.dirname(__file__), "bullet.png")
-            loaded = pygame.image.load(img_path).convert_alpha()
-            self.image = pygame.transform.smoothscale(loaded, (40, 60))
-        except Exception:
-            self.image = pygame.Surface([40, 60], pygame.SRCALPHA)
-            self.image.fill(JAUNE)
-        self.rect = self.image.get_rect()
-        self.rect.centerx = x
-        self.rect.bottom = y
-        self.vitesse_y = -15
+            img = pygame.image.load(os.path.join(os.path.dirname(__file__), "bullet.png")).convert_alpha()
+            self.image = pygame.transform.smoothscale(img, (15, 30))
+        except:
+            self.image = pygame.Surface([6, 20], pygame.SRCALPHA)
+            pygame.draw.rect(self.image, JAUNE, [0,0,6,20], border_radius=3)
+        
+        if angle: 
+            self.image = pygame.transform.rotate(self.image, -angle)
+            
+        self.rect = self.image.get_rect(center=(x,y))
+        rad = math.radians(angle)
+        self.vx = 15 * math.sin(rad)
+        self.vy = -15 * math.cos(rad)
 
     def update(self):
-        self.rect.y += self.vitesse_y
-        if self.rect.bottom < 0:
-            self.kill()
+        self.rect.x += self.vx
+        self.rect.y += self.vy
+        if self.rect.bottom < 0: self.kill()
 
-# --- GESTIONNAIRE DU JEU ---
+class Coeur(pygame.sprite.Sprite):
+    def __init__(self):
+        super().__init__()
+        try:
+            img = pygame.image.load(os.path.join(os.path.dirname(__file__), "coeur.png")).convert_alpha()
+            self.image = pygame.transform.smoothscale(img, (30, 30))
+        except:
+            self.image = pygame.Surface([30, 30], pygame.SRCALPHA)
+            pygame.draw.circle(self.image, ROUGE, (15, 15), 15)
+        self.rect = self.image.get_rect()
+        self.rect.x = random.randint(50, LARGEUR_JEU - 50)
+        self.rect.y = -50
+
+    def update(self):
+        self.rect.y += 4
+        if self.rect.top > HAUTEUR_JEU: self.kill()
+
+# --- MOTEUR JEU ---
 
 class Jeu:
     def __init__(self):
         self.etat = "MENU"
-        self.plein_ecran = False
-        
-        # 🎵 NOUVEAU: Gestionnaire de musique
         self.musique = GestionnaireMusique()
+        self.vfx = GestionnaireVFX()
+        
+        self.img_coeur = pygame.Surface([30,30], pygame.SRCALPHA)
+        pygame.draw.circle(self.img_coeur, ROUGE, (15,15), 14)
         
         self.creer_menus()
         self.creer_fond()
         self.reset_partie()
-        pygame.mouse.set_visible(True)
 
     def creer_fond(self):
-        dossier = os.path.dirname(__file__)
-        img_path = None
-
-        # PRIORITÉ : si l'utilisateur fournit explicitement 'fond.png'
-        preferred = os.path.join(dossier, "fond.png")
-        if os.path.exists(preferred):
-            img_path = preferred
+        path = glob.glob(os.path.join(os.path.dirname(__file__), "*.png"))
+        fond_img = None
+        for p in path:
+            if "fond" in p or "background" in p: 
+                try: fond_img = pygame.image.load(p).convert(); break
+                except: pass
+        if fond_img: self.image_fond = pygame.transform.scale(fond_img, (LARGEUR_JEU, HAUTEUR_JEU))
         else:
-            for pattern in ("*.png", "*.jpg", "*.jpeg", "*.bmp", "*.webp"):
-                matches = glob.glob(os.path.join(dossier, pattern))
-                if matches:
-                    img_path = matches[0]
-                    break
-
-        if img_path:
-            try:
-                loaded = pygame.image.load(img_path).convert()
-                ow, oh = loaded.get_width(), loaded.get_height()
-                scale = max(LARGEUR_JEU / ow, HAUTEUR_JEU / oh)
-                new_w = int(ow * scale)
-                new_h = int(oh * scale)
-                loaded = pygame.transform.smoothscale(loaded, (new_w, new_h))
-                self.image_fond = loaded
-            except Exception as e:
-                print("Impossible de charger l'image de fond:", e)
-                img_path = None
-
-        if not img_path:
             self.image_fond = pygame.Surface((LARGEUR_JEU, HAUTEUR_JEU))
-            for y in range(HAUTEUR_JEU):
-                c = 30 + (y * 40 // HAUTEUR_JEU)
-                pygame.draw.line(self.image_fond, (c, c, c+10), (0, y), (LARGEUR_JEU, y))
-            for i in range(0, HAUTEUR_JEU, 100):
-                pygame.draw.line(self.image_fond, (80, 80, 90), (0, i), (LARGEUR_JEU, i), 2)
-
-        self.fond_x = (LARGEUR_JEU - self.image_fond.get_width()) // 2
-        self.hauteur_fond = self.image_fond.get_height()
-        self.fond_y1 = 0
-        self.fond_y2 = -self.hauteur_fond
-        self.vitesse_fond = 1.5
+            for i in range(HAUTEUR_JEU):
+                c = int(i/HAUTEUR_JEU * 50)
+                pygame.draw.line(self.image_fond, (c,c,c+20), (0,i), (LARGEUR_JEU,i))
+        self.fond_y = 0
 
     def update_fond(self):
-        self.fond_y1 += self.vitesse_fond
-        self.fond_y2 += self.vitesse_fond
-
-        if self.fond_y1 >= self.hauteur_fond:
-            self.fond_y1 = self.fond_y2 - self.hauteur_fond
-
-        if self.fond_y2 >= self.hauteur_fond:
-            self.fond_y2 = self.fond_y1 - self.hauteur_fond
+        self.fond_y += 2
+        if self.fond_y >= HAUTEUR_JEU: self.fond_y = 0
 
     def reset_partie(self):
         self.joueur = Soldat()
         self.all_sprites = pygame.sprite.Group(self.joueur)
         self.mobs = pygame.sprite.Group()
         self.balles = pygame.sprite.Group()
+        self.bonus = pygame.sprite.Group()
         
-        self.argent = 0
-        self.score_total = 0 
+        self.argent = 0 # Commencer à 0$
+        self.score = 0
         self.niveau = 1
-        self.niveau_precedent = 0  # 🎵 Pour détecter changement de niveau
+        self.niveau_precedent = 0
         self.vies = 3
-        self.timer_degats = 0
+        self.coeurs_generes = 0
+        self.dernier_spawn = 0
 
     def creer_menus(self):
         cx, cy = LARGEUR_JEU // 2, HAUTEUR_JEU // 2
         
-        self.btn_jouer = Bouton(cx, cy - 60, 300, 60, "JOUER", lambda: "LANCER_JEU")
-        self.btn_options = Bouton(cx, cy + 20, 300, 60, "OPTIONS", lambda: "ALLER_OPTIONS")
-        self.btn_quitter = Bouton(cx, cy + 100, 300, 60, "QUITTER", lambda: "QUITTER")
-        self.liste_boutons_menu = [self.btn_jouer, self.btn_options, self.btn_quitter]
+        # Menu Principal
+        self.menu_principal = [
+            Bouton(cx, cy-60, 300, 60, "JOUER", lambda: "LANCER"),
+            Bouton(cx, cy+20, 300, 60, "OPTIONS", lambda: "OPTIONS"),
+            Bouton(cx, cy+100, 300, 60, "QUITTER", lambda: "QUITTER")
+        ]
+        
+        # Menu Options
+        self.menu_options = [
+            Bouton(cx, cy-60, 400, 60, "MUSIQUE: ON", lambda: "TOGGLE_M"),
+            Bouton(cx, cy+20, 400, 60, "EFFETS: ON", lambda: "TOGGLE_E"),
+            Bouton(cx, cy+100, 300, 60, "RETOUR", lambda: "RETOUR")
+        ]
+        
+        # Boutons Pause / Boutique
+        self.boutons_pause = [
+            Bouton(cx - 300, HAUTEUR_JEU - 80, 200, 50, "OPTIONS", lambda: "OPTIONS"),
+            Bouton(cx, HAUTEUR_JEU - 80, 200, 50, "MENU PRINCIPAL", lambda: "MENU"),
+            Bouton(cx + 300, HAUTEUR_JEU - 80, 200, 50, "QUITTER JEU", lambda: "QUITTER")
+        ]
 
-        self.btn_reprendre = Bouton(cx, cy - 180, 300, 60, "REPRENDRE", lambda: "REPRENDRE")
-        self.btn_up_tir = Bouton(cx, cy - 80, 400, 60, "Tir Rapide (+1) : 100$", lambda: "UP_TIR")
-        self.btn_menu_principal = Bouton(cx, cy + 50, 300, 60, "MENU PRINCIPAL", lambda: "RETOUR_MENU")
-        self.liste_boutons_pause = [self.btn_reprendre, self.btn_up_tir, self.btn_menu_principal]
-
-        # 🎵 NOUVEAU: Boutons audio
-        self.btn_toggle_musique = Bouton(cx, cy - 120, 400, 60, "Musique : ON", lambda: "TOGGLE_MUSIQUE")
-        self.btn_toggle_effets = Bouton(cx, cy - 40, 400, 60, "Effets : ON", lambda: "TOGGLE_EFFETS")
-        self.btn_fullscreen = Bouton(cx, cy + 40, 400, 60, "Plein Écran : NON", lambda: "TOGGLE_FULLSCREEN")
-        self.btn_retour_opt = Bouton(cx, cy + 140, 300, 60, "RETOUR", lambda: "RETOUR_DEPUIS_OPT")
-        self.liste_boutons_options = [self.btn_toggle_musique, self.btn_toggle_effets, 
-                                      self.btn_fullscreen, self.btn_retour_opt]
-
-    def basculer_plein_ecran(self):
-        self.plein_ecran = not self.plein_ecran
-        if self.plein_ecran:
-            try:
-                pygame.display.set_mode((LARGEUR_JEU, HAUTEUR_JEU), pygame.FULLSCREEN)
-                self.btn_fullscreen.texte = "Plein Écran : OUI"
-            except:
-                pygame.display.set_mode((LARGEUR_JEU, HAUTEUR_JEU))
-                self.plein_ecran = False
-                self.btn_fullscreen.texte = "Plein Écran : NON"
-        else:
-            pygame.display.set_mode((LARGEUR_JEU, HAUTEUR_JEU))
-            self.btn_fullscreen.texte = "Plein Écran : NON"
-
-    def gerer_entrees(self):
-        pos_souris = pygame.mouse.get_pos()
+    def inputs(self):
+        mx, my = pygame.mouse.get_pos()
+        clic = False
         
         for event in pygame.event.get():
             if event.type == pygame.QUIT: return False
-            
+            if event.type == pygame.MOUSEBUTTONDOWN: clic = True
             if event.type == pygame.KEYDOWN:
-                # Pause
                 if event.key == pygame.K_ESCAPE or event.key == pygame.K_p:
-                    if self.etat == "JEU":
-                        self.etat = "PAUSE"
-                        pygame.mouse.set_visible(True)
-                    elif self.etat == "PAUSE":
-                        self.etat = "JEU"
-                        pygame.mouse.set_visible(False)
+                    self.etat = "PAUSE" if self.etat == "JEU" else "JEU"
+                    pygame.mouse.set_visible(self.etat != "JEU")
                 
-                # Rejouer
-                if self.etat == "GAMEOVER" and event.key == pygame.K_r:
-                    self.reset_partie()
-                    self.etat = "JEU"
+                if event.key == pygame.K_r and self.etat == "GAMEOVER":
+                    self.reset_partie(); self.etat = "JEU"
+                    self.musique.jouer_musique(1)
                     pygame.mouse.set_visible(False)
-                    # 🎵 Démarrer musique niveau 1
-                    self.musique.jouer_musique_niveau(1)
                 
-                # 🎵 NOUVEAU: Contrôles audio
-                if event.key == pygame.K_m:
-                    actif = self.musique.basculer_musique()
-                    self.btn_toggle_musique.texte = f"Musique : {'ON' if actif else 'OFF'}"
-                
-                if event.key == pygame.K_n:
-                    actif = self.musique.basculer_effets()
-                    self.btn_toggle_effets.texte = f"Effets : {'ON' if actif else 'OFF'}"
-                
-                if event.key == pygame.K_PLUS or event.key == pygame.K_KP_PLUS or event.key == pygame.K_EQUALS:
-                    self.musique.modifier_volume_musique(0.1)
-                
-                if event.key == pygame.K_MINUS or event.key == pygame.K_KP_MINUS:
-                    self.musique.modifier_volume_musique(-0.1)
+                if self.etat == "JEU":
+                    if event.key == pygame.K_SPACE and not self.joueur.invincible: pass
+                    if event.key == pygame.K_b and self.joueur.nukes > 0:
+                        self.joueur.nukes -= 1
+                        self.vfx.declencher_nuke()
+                        self.musique.effet("nuke")
+                        for m in self.mobs:
+                            self.vfx.ajouter(m.rect.centerx, m.rect.centery, GRIS_FONCE, 20)
+                            m.kill()
+                            self.argent += 10
+                            
+        # Gestion Clics Menus
+        active_menu = []
+        if self.etat == "MENU": active_menu = self.menu_principal
+        elif self.etat == "OPTIONS": active_menu = self.menu_options
+        elif self.etat == "PAUSE": active_menu = self.boutons_pause
 
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                if event.button == 1:
-                    action = None
-                    liste = []
-                    if self.etat == "MENU": liste = self.liste_boutons_menu
-                    elif self.etat == "PAUSE": liste = self.liste_boutons_pause
-                    elif self.etat == "OPTIONS": liste = self.liste_boutons_options
-                    
-                    for btn in liste:
-                        res = btn.verifier_clic(pos_souris)
-                        if res: action = res
-                    
-                    self.executer_action_menu(action)
+        for btn in active_menu:
+            res = btn.verifier((mx, my), clic)
+            if res == "LANCER": 
+                self.reset_partie(); self.etat = "JEU"
+                self.musique.jouer_musique(1); pygame.mouse.set_visible(False)
+            elif res == "QUITTER": pygame.quit(); sys.exit()
+            elif res == "OPTIONS": self.etat = "OPTIONS"
+            elif res == "RETOUR": 
+                self.etat = "MENU"
+            elif res == "MENU": 
+                self.etat = "MENU"; self.musique.arreter()
+                pygame.mouse.set_visible(True)
+            elif res == "TOGGLE_M": 
+                etat = self.musique.toggle_m()
+                btn.texte = f"MUSIQUE: {'ON' if etat else 'OFF'}"
+            elif res == "TOGGLE_E":
+                etat = self.musique.toggle_e()
+                btn.texte = f"EFFETS: {'ON' if etat else 'OFF'}"
 
-        liste = []
-        if self.etat == "MENU": liste = self.liste_boutons_menu
-        elif self.etat == "PAUSE": liste = self.liste_boutons_pause
-        elif self.etat == "OPTIONS": liste = self.liste_boutons_options
-        for btn in liste: btn.verifier_survol(pos_souris)
+        if self.etat == "PAUSE" and clic:
+            self.clic_boutique(mx, my)
 
         return True
 
-    def executer_action_menu(self, action):
-        if not action: return
+    def clic_boutique(self, mx, my):
+        cx = LARGEUR_JEU // 2
+        y_start = 180
+        
+        prix_tir = 9999; txt_tir = "Tir MAX"
+        if self.joueur.niveau_tir == 1: txt_tir = "Tir Double (200$)"; prix_tir = 200
+        elif self.joueur.niveau_tir == 2: txt_tir = "Tir Quadruple (400$)"; prix_tir = 400
+        
+        prix_cad = self.joueur.niveau_cadence * 100
+        txt_cad = f"Cadence Niv {self.joueur.niveau_cadence+1} ({prix_cad}$)"
+        if self.joueur.niveau_cadence >= 6: txt_cad = "Cadence MAX"; prix_cad = 9999
 
-        if action == "LANCER_JEU":
-            self.reset_partie()
-            self.etat = "JEU"
-            pygame.mouse.set_visible(False)
-            # 🎵 Démarrer musique du niveau 1
-            self.musique.jouer_musique_niveau(1)
-            
-        elif action == "QUITTER":
-            pygame.quit()
-            sys.exit()
-            
-        elif action == "ALLER_OPTIONS":
-            self.etat = "OPTIONS"
-            
-        elif action == "RETOUR_DEPUIS_OPT":
-            self.etat = "MENU"
-            
-        elif action == "REPRENDRE":
-            self.etat = "JEU"
-            pygame.mouse.set_visible(False)
-            
-        elif action == "RETOUR_MENU":
-            self.etat = "MENU"
-            pygame.mouse.set_visible(True)
-            # 🎵 Arrêter la musique en revenant au menu
-            self.musique.arreter_musique()
-            
-        elif action == "TOGGLE_FULLSCREEN":
-            self.basculer_plein_ecran()
-            
-        # 🎵 NOUVEAU: Actions audio
-        elif action == "TOGGLE_MUSIQUE":
-            actif = self.musique.basculer_musique()
-            self.btn_toggle_musique.texte = f"Musique : {'ON' if actif else 'OFF'}"
-            
-        elif action == "TOGGLE_EFFETS":
-            actif = self.musique.basculer_effets()
-            self.btn_toggle_effets.texte = f"Effets : {'ON' if actif else 'OFF'}"
-            
-        elif action == "UP_TIR":
-            prix = 100
-            if self.argent >= prix and self.joueur.niveau_cadence < 10:
-                self.argent -= prix
-                self.joueur.niveau_cadence += 1
-                # 🎵 Son d'achat
-                self.musique.jouer_effet("piece")
+        zones = [
+            ("tir", prix_tir, y_start),
+            ("cadence", prix_cad, y_start + 80),
+            ("inv", 30, y_start + 160),
+            ("nuke", 30, y_start + 240)
+        ]
 
-    def update_jeu(self):
+        for action, prix, y in zones:
+            rect = pygame.Rect(cx-300, y, 600, 60)
+            if rect.collidepoint(mx, my) and self.argent >= prix:
+                buy = False
+                if action == "tir":
+                    if self.joueur.niveau_tir == 1: self.joueur.niveau_tir = 2; buy = True
+                    elif self.joueur.niveau_tir == 2: self.joueur.niveau_tir = 3; buy = True
+                elif action == "cadence":
+                    if self.joueur.niveau_cadence < 6: self.joueur.niveau_cadence += 1; buy = True
+                elif action == "inv":
+                    self.joueur.invincible = True; self.joueur.fin_invincibilite = pygame.time.get_ticks() + 30000; buy = True
+                elif action == "nuke":
+                    self.joueur.nukes += 1; buy = True
+                
+                if buy:
+                    self.argent -= prix
+                    self.musique.effet("levelup")
+
+    def logic(self):
+        if self.etat != "JEU": return
+        
         self.update_fond()
+        self.vfx.update()
         self.all_sprites.update()
         
-        # Tir auto
-        balle = self.joueur.verifier_tir_auto()
-        if balle:
-            self.all_sprites.add(balle)
-            self.balles.add(balle)
-            # 🎵 Son de tir
-            self.musique.jouer_effet("tir")
+        # Tir Automatique
+        balles = self.joueur.tirer()
+        if balles:
+            self.musique.effet("tir")
+            self.vfx.ajouter(self.joueur.rect.centerx, self.joueur.rect.top, JAUNE, 2)
+            for b in balles:
+                self.balles.add(b); self.all_sprites.add(b)
 
-        # Niveaux
-        self.niveau = 1 + (self.score_total // 300)
-        if self.niveau > 3: self.niveau = 3  # Maximum 3 niveaux
+        self.niveau = 1 + (self.score // 500)
+        if self.niveau > 3: self.niveau = 3
         
-        # 🎵 NOUVEAU: Changer la musique quand le niveau change
         if self.niveau != self.niveau_precedent:
-            self.musique.jouer_musique_niveau(self.niveau)
+            self.musique.jouer_musique(self.niveau)
             self.niveau_precedent = self.niveau
+            self.coeurs_generes = 0
 
-        # Apparition
-        seuil_apparition = max(20, 80 - (self.niveau * 12))
-        if random.randint(1, seuil_apparition) == 1:
-            t = Tornade()
-            self.all_sprites.add(t)
-            self.mobs.add(t)
+        # --- SPAWN MAX 2 ---
+        now = pygame.time.get_ticks()
+        nb_mobs = len(self.mobs)
+        if nb_mobs < 2:
+            if now - self.dernier_spawn > 1000: # 1 seconde d'attente
+                t = Tornade(self.niveau)
+                self.mobs.add(t); self.all_sprites.add(t)
+                self.dernier_spawn = now
 
-        # Collisions
-        hits = pygame.sprite.groupcollide(self.mobs, self.balles, True, True)
-        for t, b_list in hits.items():
-            self.argent += t.valeur
-            self.score_total += t.valeur
-            # 🎵 Son d'explosion
-            self.musique.jouer_effet("explosion")
+        # Apparition Coeurs
+        if self.coeurs_generes < 2 and random.randint(1, 800) == 1:
+            c = Coeur()
+            self.bonus.add(c); self.all_sprites.add(c)
+            self.coeurs_generes += 1
 
-        # Dégâts
-        toucher = False
-        hits_joueur = pygame.sprite.spritecollide(self.joueur, self.mobs, True)
-        if hits_joueur:
-            toucher = True
-            self.vies -= 1
-            # 🎵 Son de dégâts
-            self.musique.jouer_effet("degats")
-        
+        hits = pygame.sprite.groupcollide(self.mobs, self.balles, False, True)
+        for mob, balles in hits.items():
+            mob.pv -= 1
+            self.musique.effet("degats")
+            self.vfx.ajouter(mob.rect.centerx, mob.rect.centery, JAUNE, 3)
+            if mob.pv <= 0:
+                mob.kill()
+                self.score += 20 * self.niveau
+                self.argent += 10 * self.niveau
+                self.musique.effet("explosion")
+                self.vfx.ajouter(mob.rect.centerx, mob.rect.centery, GRIS_FONCE, 10)
+
+        hit_player = pygame.sprite.spritecollide(self.joueur, self.mobs, False) 
+        for m in hit_player:
+            if not self.joueur.invincible:
+                if random.randint(1,10) == 1: 
+                    self.vies -= 1
+                    self.vfx.ajouter(self.joueur.rect.centerx, self.joueur.rect.centery, ROUGE_SANG, 15)
+                    self.musique.effet("degats")
+
+        for c in pygame.sprite.spritecollide(self.joueur, self.bonus, True):
+            if self.vies < 5: self.vies += 1
+            self.musique.effet("soin")
+            
         for m in self.mobs:
             if m.rect.top > HAUTEUR_JEU:
                 m.kill()
-                toucher = True
-                self.vies -= 1
-                # 🎵 Son de dégâts
-                self.musique.jouer_effet("degats")
-        
-        if toucher: self.timer_degats = 15
-        
+                # On perd une vie si elle sort en bas
+                if not self.joueur.invincible:
+                    self.vies -= 1
+                    self.musique.effet("degats")
+                    self.vfx.ajouter(m.rect.centerx, HAUTEUR_JEU-10, ROUGE, 5)
+
         if self.vies <= 0:
             self.etat = "GAMEOVER"
+            self.musique.effet("gameover")
+            self.musique.arreter()
             pygame.mouse.set_visible(True)
-            # 🎵 Son de game over
-            self.musique.jouer_effet("gameover")
-            # 🎵 Arrêter la musique
-            self.musique.arreter_musique()
 
-    def dessiner(self):
-        ecran.fill(BLEU_NUIT)
-
+    def draw(self):
+        ecran.fill(NOIR)
+        
         if self.etat == "MENU":
-            titre = grosse_font.render("INDEPENDANCE DAY", True, JAUNE)
-            rect_titre = titre.get_rect(center=(LARGEUR_JEU//2, 150))
-            ecran.blit(titre, rect_titre)
-            for btn in self.liste_boutons_menu: btn.dessiner(ecran)
-            
-            # 🎵 NOUVEAU: Afficher les contrôles audio
-            aide = petite_font.render("M: Musique | N: Effets | +/-: Volume", True, BLANC)
-            ecran.blit(aide, (LARGEUR_JEU//2 - aide.get_width()//2, HAUTEUR_JEU - 50))
+            titre = grosse_font.render("INDEPENDANCE DAY", True, OR)
+            ecran.blit(titre, (LARGEUR_JEU//2 - titre.get_width()//2, 150))
+            for btn in self.menu_principal: btn.dessiner(ecran)
 
         elif self.etat == "OPTIONS":
             titre = grosse_font.render("OPTIONS", True, BLANC)
-            rect_titre = titre.get_rect(center=(LARGEUR_JEU//2, 150))
-            ecran.blit(titre, rect_titre)
-            
-            # 🎵 NOUVEAU: Info sur les musiques chargées
-            nb_niveaux = len(self.musique.musiques_niveaux)
-            nb_effets = len(self.musique.effets_sonores)
-            
-            info1 = petite_font.render(f"Musiques de niveaux: {nb_niveaux}/3", True, OR)
-            info2 = petite_font.render(f"Effets sonores: {nb_effets}", True, OR)
-            
-            ecran.blit(info1, (LARGEUR_JEU//2 - info1.get_width()//2, 240))
-            ecran.blit(info2, (LARGEUR_JEU//2 - info2.get_width()//2, 270))
-            
-            for btn in self.liste_boutons_options: btn.dessiner(ecran)
+            ecran.blit(titre, (LARGEUR_JEU//2 - titre.get_width()//2, 150))
+            for btn in self.menu_options: btn.dessiner(ecran)
 
         elif self.etat == "JEU" or self.etat == "PAUSE" or self.etat == "GAMEOVER":
-            ecran.blit(self.image_fond, (self.fond_x, self.fond_y1))
-            ecran.blit(self.image_fond, (self.fond_x, self.fond_y2))
+            ecran.blit(self.image_fond, (0, self.fond_y))
+            ecran.blit(self.image_fond, (0, self.fond_y - HAUTEUR_JEU))
             
             self.all_sprites.draw(ecran)
             
-            # HUD
-            txt_argent = font.render(f"Caisse: {self.argent} $", True, OR)
-            ecran.blit(txt_argent, (20, 20))
-            
-            txt_niveau = font.render(f"NIVEAU {self.niveau}", True, JAUNE)
-            rect_niveau = txt_niveau.get_rect(center=(LARGEUR_JEU//2, 30))
-            ecran.blit(txt_niveau, rect_niveau)
-            
-            couleur_vie = ROUGE if self.vies == 1 else BLANC
-            txt_vies = font.render(f"Vies: {self.vies}", True, couleur_vie)
-            ecran.blit(txt_vies, (LARGEUR_JEU - 150, 20))
+            # --- DESSIN DES BARRES DE VIE ---
+            for m in self.mobs:
+                if m.max_pv > 1:
+                    w = m.rect.width
+                    h = 5
+                    ratio = m.pv / m.max_pv
+                    pygame.draw.rect(ecran, ROUGE, (m.rect.x, m.rect.y - 10, w, h))
+                    pygame.draw.rect(ecran, VERT, (m.rect.x, m.rect.y - 10, w*ratio, h))
 
-            if self.timer_degats > 0:
-                pygame.draw.rect(ecran, ROUGE, (0,0,LARGEUR_JEU,HAUTEUR_JEU), 20)
-                self.timer_degats -= 1
+            self.vfx.draw(ecran)
+            
+            if self.joueur.invincible:
+                pygame.draw.circle(ecran, BLEU_BOUCLIER, self.joueur.rect.center, 40, 3)
+
+            if self.vies == 1: self.vfx.draw_low_hp(ecran)
+
+            for i in range(self.vies):
+                ecran.blit(self.img_coeur, (LARGEUR_JEU - 40 - (i*35), 20))
+
+            t1 = font.render(f"Argent: {self.argent}$", True, OR)
+            t2 = font.render(f"Niveau {self.niveau} | Score {self.score}", True, BLANC)
+            t3 = font.render(f"Nuke: {self.joueur.nukes} [B]", True, ROUGE)
+            ecran.blit(t1, (20, 20))
+            ecran.blit(t2, (LARGEUR_JEU//2 - t2.get_width()//2, 20))
+            ecran.blit(t3, (20, 60))
 
             if self.etat == "PAUSE":
-                s = pygame.Surface((LARGEUR_JEU, HAUTEUR_JEU))
-                s.set_alpha(200)
-                s.fill(NOIR)
+                s = pygame.Surface((LARGEUR_JEU, HAUTEUR_JEU)); s.set_alpha(220); s.fill(NOIR)
                 ecran.blit(s, (0,0))
                 
-                titre = grosse_font.render("BOUTIQUE & PAUSE", True, BLANC)
-                ecran.blit(titre, titre.get_rect(center=(LARGEUR_JEU//2, 100)))
+                titre = grosse_font.render("BOUTIQUE", True, OR)
+                ecran.blit(titre, (LARGEUR_JEU//2 - titre.get_width()//2, 50))
                 
-                self.btn_up_tir.texte = f"Tir Rapide (Niv {self.joueur.niveau_cadence}) : 100$"
-                self.btn_up_tir.couleur_base = VERT_MILITAIRE if self.argent >= 100 else ROUGE
+                cx = LARGEUR_JEU // 2
+                y = 180
+                mx, my = pygame.mouse.get_pos()
                 
-                for btn in self.liste_boutons_pause: btn.dessiner(ecran)
+                prix_tir = 9999; txt_tir = "Tir MAX"
+                if self.joueur.niveau_tir == 1: txt_tir = "Tir Double (200$)"; prix_tir = 200
+                elif self.joueur.niveau_tir == 2: txt_tir = "Tir Quadruple (400$)"; prix_tir = 400
+                
+                prix_cad = self.joueur.niveau_cadence * 100
+                txt_cad = f"Cadence Niv {self.joueur.niveau_cadence+1} ({prix_cad}$)"
+                if self.joueur.niveau_cadence >= 6: txt_cad = "Cadence MAX"; prix_cad = 9999
 
-            elif self.etat == "GAMEOVER":
-                s = pygame.Surface((LARGEUR_JEU, HAUTEUR_JEU))
-                s.set_alpha(230)
-                s.fill(NOIR)
-                ecran.blit(s, (0,0))
-                
-                t1 = grosse_font.render("GAME OVER", True, ROUGE)
-                t2 = font.render(f"Argent récolté: {self.argent} $", True, OR)
-                t3 = font.render(f"Niveau atteint: {self.niveau}", True, JAUNE)
-                t4 = font.render("Appuie sur 'R' pour rejouer", True, BLANC)
-                
-                ecran.blit(t1, t1.get_rect(center=(LARGEUR_JEU//2, HAUTEUR_JEU//2 - 60)))
-                ecran.blit(t2, t2.get_rect(center=(LARGEUR_JEU//2, HAUTEUR_JEU//2 + 10)))
-                ecran.blit(t3, t3.get_rect(center=(LARGEUR_JEU//2, HAUTEUR_JEU//2 + 50)))
-                ecran.blit(t4, t4.get_rect(center=(LARGEUR_JEU//2, HAUTEUR_JEU//2 + 110)))
+                items_display = [
+                    (prix_tir, txt_tir, self.joueur.niveau_tir < 3),
+                    (prix_cad, txt_cad, self.joueur.niveau_cadence < 6),
+                    (30, "Invincibilité 30s (30$)", True),
+                    (30, "Bombe Nuke (30$)", True)
+                ]
+
+                for prix, txt, dispo in items_display:
+                    rect = pygame.Rect(cx-300, y, 600, 60)
+                    col = BLANC if (dispo and self.argent >= prix) else GRIS_FONCE
+                    if not dispo: col = GRIS_FONCE
+                    
+                    if rect.collidepoint(mx, my) and dispo and self.argent >= prix:
+                        pygame.draw.rect(ecran, (50,50,70), rect, border_radius=10)
+                    
+                    pygame.draw.rect(ecran, col, rect, 2, border_radius=10)
+                    t = font.render(txt, True, col)
+                    ecran.blit(t, (rect.x + 20, rect.centery - t.get_height()//2))
+                    y += 80
+
+                for btn in self.boutons_pause: btn.dessiner(ecran)
+
+            if self.etat == "GAMEOVER":
+                t = grosse_font.render("GAME OVER", True, ROUGE)
+                t2 = font.render("Appuyez sur R pour rejouer", True, BLANC)
+                ecran.blit(t, (LARGEUR_JEU//2 - t.get_width()//2, 300))
+                ecran.blit(t2, (LARGEUR_JEU//2 - t2.get_width()//2, 400))
 
         pygame.display.flip()
 
     def run(self):
         while True:
-            actif = self.gerer_entrees()
-            if not actif: break
-            
-            if self.etat == "JEU":
-                self.update_jeu()
-            
-            self.dessiner()
+            if not self.inputs(): break
+            self.logic()
+            self.draw()
             clock.tick(FPS)
 
 if __name__ == "__main__":
     jeu = Jeu()
     jeu.run()
-    pygame.quit()
-    sys.exit()
